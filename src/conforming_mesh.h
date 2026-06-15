@@ -33,6 +33,16 @@ public:
   }
 };
 
+// Edge constraints: independent of triangle constraints_t.
+// edge_vertices stores [v0,v1, v0,v1, ...] for each edge,
+// pointing into mesh->vertices[] after both remaps are applied.
+struct edge_constraints_t {
+    uint32_t* edge_vertices;  // length = 2 * num_edges
+    uint32_t num_edges;
+
+    edge_constraints_t() : edge_vertices(NULL), num_edges(0) {}
+    ~edge_constraints_t() { if (edge_vertices) free(edge_vertices); }
+};
 
 void fill_half_edges(const constraints_t* constraints, half_edge_t* half_edges);
 void sort_half_edges(half_edge_t* half_edges, uint32_t num_half_edges);
@@ -44,5 +54,26 @@ void insert_constraints( TetMesh* , constraints_t*, uint32_t*, uint32_t**,
                                                    uint32_t*, uint32_t**,
                                                    uint32_t*, uint32_t**  );
 
+// --- MVP-0: edge segment tracing ---
+
+// Trace a single segment <v_start, v_stop> through the tetrahedral mesh.
+// Returns touched tets via touched_tets / num_touched_tets (caller frees).
+// mark_TetIntersection must be pre-allocated (calloc) by the caller,
+// length = mesh->tet_num, and will be used as 0/INTERSECTION visited marker.
+void trace_segment_through_tets(
+    TetMesh* mesh,
+    uint32_t v_start,
+    uint32_t v_stop,
+    uint32_t* mark_TetIntersection,
+    uint64_t** touched_tets,
+    uint64_t* num_touched_tets
+);
+
+// Trace all edges in edge_constraints and print debug output.
+// Does NOT modify mesh or constraint maps.
+void debug_trace_edge_constraints(
+    TetMesh* mesh,
+    edge_constraints_t* edge_constraints
+);
 
 #endif

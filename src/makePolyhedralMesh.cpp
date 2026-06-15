@@ -342,6 +342,23 @@ BSPcomplex* makePolyhedralMesh(
 
     TetMesh* mesh = new TetMesh;
     constraints_t* constraints = new constraints_t;
+    edge_constraints_t* edge_constraints = NULL;  // MVP-0: only for single-input
+    uint32_t dedup_v0 = UINT32_MAX, dedup_v1 = UINT32_MAX; // MVP-0: for first-remap print
+
+    // --- MVP-0: save raw edge endpoint coords before coords_A is freed ---
+    // Hardcoded: edge 0 = OFF vertex 0 -> OFF vertex 1
+    double edge_raw_coords_v0[3], edge_raw_coords_v1[3];
+    uint32_t edge_raw_idx_v0 = 0, edge_raw_idx_v1 = 1;  // MVP-0: restore default
+
+    // Copy coordinates from coords_A before it might be freed
+    if (npts_A > 1) {
+        edge_raw_coords_v0[0] = coords_A[edge_raw_idx_v0 * 3];
+        edge_raw_coords_v0[1] = coords_A[edge_raw_idx_v0 * 3 + 1];
+        edge_raw_coords_v0[2] = coords_A[edge_raw_idx_v0 * 3 + 2];
+        edge_raw_coords_v1[0] = coords_A[edge_raw_idx_v1 * 3];
+        edge_raw_coords_v1[1] = coords_A[edge_raw_idx_v1 * 3 + 1];
+        edge_raw_coords_v1[2] = coords_A[edge_raw_idx_v1 * 3 + 2];
+    }
 
     if (!two_input) {
         read_nodes_and_constraints(coords_A, npts_A, tri_idx_A, ntri_A,
@@ -351,6 +368,47 @@ BSPcomplex* makePolyhedralMesh(
             &constraints->num_triangles,
             verbose);
         constraints->constr_group = (uint32_t*)calloc(constraints->num_triangles, sizeof(uint32_t));
+
+        // --- MVP-0: first remap — find dedup indices for edge endpoints ---
+        // After dedup, we need to locate OFF vertex 0 and 1 in mesh->vertices[]
+        edge_constraints = new edge_constraints_t;
+        edge_constraints->num_edges = 1;
+        edge_constraints->edge_vertices = (uint32_t*)malloc(2 * sizeof(uint32_t));
+
+        // Search mesh->vertices[] for matching coordinates
+        dedup_v0 = UINT32_MAX; dedup_v1 = UINT32_MAX;
+        for (uint32_t i = 0; i < mesh->num_vertices; i++) {
+            double* vc = mesh->vertices[i].coord;
+            if (dedup_v0 == UINT32_MAX &&
+                vc[0] == edge_raw_coords_v0[0] &&
+                vc[1] == edge_raw_coords_v0[1] &&
+                vc[2] == edge_raw_coords_v0[2]) {
+                dedup_v0 = i;
+            }
+            if (dedup_v1 == UINT32_MAX &&
+                vc[0] == edge_raw_coords_v1[0] &&
+                vc[1] == edge_raw_coords_v1[1] &&
+                vc[2] == edge_raw_coords_v1[2]) {
+                dedup_v1 = i;
+            }
+            if (dedup_v0 != UINT32_MAX && dedup_v1 != UINT32_MAX) break;
+        }
+
+        if (dedup_v0 == UINT32_MAX || dedup_v1 == UINT32_MAX) {
+            fprintf(stderr, "MVP-0 ERROR: could not find OFF vertex %u or %u "
+                    "in dedup vertices[]\n", edge_raw_idx_v0, edge_raw_idx_v1);
+            edge_constraints->edge_vertices[0] = 0;
+            edge_constraints->edge_vertices[1] = 1;
+        } else {
+            edge_constraints->edge_vertices[0] = dedup_v0;
+            edge_constraints->edge_vertices[1] = dedup_v1;
+            fprintf(stderr, "\nMVP-0: edge raw (%u,%u) -> dedup (%u,%u)\n",
+                    edge_raw_idx_v0, edge_raw_idx_v1, dedup_v0, dedup_v1);
+            fprintf(stderr, "MVP-0: raw v0 coord = (%f,%f,%f)\n",
+                    edge_raw_coords_v0[0], edge_raw_coords_v0[1], edge_raw_coords_v0[2]);
+            fprintf(stderr, "MVP-0: raw v1 coord = (%f,%f,%f)\n",
+                    edge_raw_coords_v1[0], edge_raw_coords_v1[1], edge_raw_coords_v1[2]);
+        }
     }
     else { // two input
         read_nodes_and_constraints_twoInput(coords_A, npts_A, tri_idx_A, ntri_A,
@@ -421,6 +479,50 @@ BSPcomplex* makePolyhedralMesh(
         }
     }
 
+    // --- MVP-0: second remap for edge_vertices ---
+    if (edge_constraints != NULL) {
+        // Print dedup endpoint coordinates before second remap
+        fprintf(stderr, "MVP-0: before dtize remap, dedup endpoint coords:\n");
+        fprintf(stderr, "  dedup v0 (%u): (%f,%f,%f)\n",
+                edge_constraints->edge_vertices[0],
+                mesh->vertices[edge_constraints->edge_vertices[0]].coord[0],
+                mesh->vertices[edge_constraints->edge_vertices[0]].coord[1],
+                mesh->vertices[edge_constraints->edge_vertices[0]].coord[2]);
+        fprintf(stderr, "  dedup v1 (%u): (%f,%f,%f)\n",
+                edge_constraints->edge_vertices[1],
+                mesh->vertices[edge_constraints->edge_vertices[1]].coord[0],
+                mesh->vertices[edge_constraints->edge_vertices[1]].coord[1],
+                mesh->vertices[edge_constraints->edge_vertices[1]].coord[2]);
+
+        if (mesh->vertices[2].original_index != 3) {
+            for (uint32_t k = 0; k < 2 * edge_constraints->num_edges; k++)
+                edge_constraints->edge_vertices[k] =
+                    mesh->vertices[edge_constraints->edge_vertices[k]].original_index;
+        } else {
+            uint32_t l = mesh->vertices[3].original_index;
+            for (uint32_t k = 0; k < 2 * edge_constraints->num_edges; k++) {
+                uint32_t c = edge_constraints->edge_vertices[k];
+                if (c == 2)      edge_constraints->edge_vertices[k] = l;
+                else if (c == 3) edge_constraints->edge_vertices[k] = 2;
+                else if (c == l) edge_constraints->edge_vertices[k] = 3;
+            }
+        }
+        fprintf(stderr, "MVP-0: edge dedup (%u,%u) -> dtize (%u,%u)\n",
+                dedup_v0, dedup_v1,
+                edge_constraints->edge_vertices[0],
+                edge_constraints->edge_vertices[1]);
+        fprintf(stderr, "MVP-0: after dtize remap, endpoint coords:\n");
+        fprintf(stderr, "  dtize v0 (%u): (%f,%f,%f)\n",
+                edge_constraints->edge_vertices[0],
+                mesh->vertices[edge_constraints->edge_vertices[0]].coord[0],
+                mesh->vertices[edge_constraints->edge_vertices[0]].coord[1],
+                mesh->vertices[edge_constraints->edge_vertices[0]].coord[2]);
+        fprintf(stderr, "  dtize v1 (%u): (%f,%f,%f)\n",
+                edge_constraints->edge_vertices[1],
+                mesh->vertices[edge_constraints->edge_vertices[1]].coord[0],
+                mesh->vertices[edge_constraints->edge_vertices[1]].coord[1],
+                mesh->vertices[edge_constraints->edge_vertices[1]].coord[2]);
+    }
 
     clock_t time2 = clock();
     if (verbose) printf("\tDelaunay insertion: %f s\n", (double)(time2 - time1) / CLOCKS_PER_SEC);
@@ -470,6 +572,11 @@ BSPcomplex* makePolyhedralMesh(
         num_map_f2, map_f2,
         num_map_f3, map_f3);
 
+    // --- MVP-0: debug edge tracing ---
+    if (edge_constraints != NULL) {
+        debug_trace_edge_constraints(mesh, edge_constraints);
+    }
+
     clock_t time4 = clock();
     if (verbose) printf("\tMap creation: %f s\n", (double)(time4 - time3) / CLOCKS_PER_SEC);
 
@@ -504,6 +611,7 @@ BSPcomplex* makePolyhedralMesh(
 
     delete mesh;
     delete constraints;
+    if (edge_constraints != NULL) delete edge_constraints;
 
     clock_t time5 = clock();
     if (verbose) printf("\tDelaunay -> Complex %lf s\n", (double)(time5 - time4) / CLOCKS_PER_SEC);

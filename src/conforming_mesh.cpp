@@ -1,6 +1,7 @@
 #include "conforming_mesh.h"
 #include "extended_predicates.h"
 #include "implicit_point.h"
+#include <cstdio>
 
 #define INTERSECTION 1
 #define IMPROPER_INTERSECTION 2
@@ -2448,6 +2449,207 @@ void intersections_constraint_sides(TetMesh* mesh, const uint32_t* constraint_vr
 
 }
 
+
+// ---------------------------------------------------------------------------
+// MVP-0: trace a single segment <v_start, v_stop> through the tet mesh.
+// Extracted from intersections_constraint_sides() — BEGIN + CONTINUE phases.
+// mark_TetIntersection: pre-allocated (calloc), length=tet_num, used as 0/1.
+// ---------------------------------------------------------------------------
+void trace_segment_through_tets(
+    TetMesh* mesh,
+    uint32_t v_start,
+    uint32_t v_stop,
+    uint32_t* mark_TetIntersection,
+    uint64_t** touched_tets,
+    uint64_t* num_touched_tets)
+{
+    *touched_tets = NULL;
+    *num_touched_tets = 0;
+
+    uint32_t connecting_vrts[4];
+    uint64_t nextTet_ind;
+
+    // --- BEGIN phase ---
+    uint64_t num_found_tet = 0;
+    uint64_t* found_tet =
+        intersections_TetVrtOnConstraintSide(mesh, v_start, v_stop,
+                                             0,  // other_constr_vrt (unused)
+                                             mark_TetIntersection,
+                                             connecting_vrts,
+                                             &nextTet_ind,
+                                             &num_found_tet);
+
+    enqueueTetsArray(found_tet, num_found_tet,
+                     touched_tets, num_touched_tets);
+    free(found_tet);
+    found_tet = NULL;
+
+    // --- CONTINUE phase ---
+    while (connecting_vrts[1] != v_stop) {
+
+        num_found_tet = 0;
+        found_tet = NULL;
+
+        uint32_t tet_edge[2], tet_face[3];
+
+        switch (connecting_vrts[0]) {
+
+          case 1:
+            found_tet = intersections_TetVrtOnConstraintSide(mesh,
+                              connecting_vrts[1], v_stop, 0,
+                              mark_TetIntersection, connecting_vrts,
+                              &nextTet_ind, &num_found_tet);
+            break;
+
+          case 2:
+            tet_edge[0] = connecting_vrts[1];
+            tet_edge[1] = connecting_vrts[2];
+            found_tet = intersections_TetEdgeCrossConstraintSide(mesh,
+                              tet_edge, v_start, v_stop, 0,
+                              mark_TetIntersection, connecting_vrts,
+                              &nextTet_ind, &num_found_tet);
+            break;
+
+          case 3:
+            tet_face[0] = connecting_vrts[1];
+            tet_face[1] = connecting_vrts[2];
+            tet_face[2] = connecting_vrts[3];
+            {
+                uint32_t to_add = intersections_TetFacePiercedConstraintSide(
+                                    mesh,
+                                    tet_face, v_start, v_stop, 0,
+                                    mark_TetIntersection, connecting_vrts,
+                                    &nextTet_ind);
+                if (to_add) {
+                    num_found_tet = 1;
+                    found_tet = (uint64_t*)malloc(sizeof(uint64_t));
+                    found_tet[0] = nextTet_ind;
+                }
+            }
+            break;
+        }
+
+        if (num_found_tet > 0) {
+            enqueueTetsArray(found_tet, num_found_tet,
+                             touched_tets, num_touched_tets);
+            free(found_tet);
+            found_tet = NULL;
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// MVP-0: debug trace all edges and print touched-tet information.
+// ---------------------------------------------------------------------------
+void debug_trace_edge_constraints(
+    TetMesh* mesh,
+    edge_constraints_t* edge_constraints)
+{
+    fprintf(stderr, "\n=== Edge Constraint Debug ===\n");
+    fprintf(stderr, "mesh->num_vertices = %u\n", mesh->num_vertices);
+    fprintf(stderr, "mesh->tet_num      = %llu\n", (unsigned long long)mesh->tet_num);
+    fprintf(stderr, "vertices[2].original_index = %u",
+            mesh->num_vertices >= 3 ? mesh->vertices[2].original_index : 0);
+    fprintf(stderr, ", vertices[3].original_index = %u",
+            mesh->num_vertices >= 4 ? mesh->vertices[3].original_index : 0);
+    if (mesh->num_vertices >= 3) {
+        if (mesh->vertices[2].original_index != 3)
+            fprintf(stderr, " => remap branch: IF\n");
+        else
+            fprintf(stderr, " => remap branch: ELSE\n");
+    } else {
+        fprintf(stderr, " (too few vertices)\n");
+    }
+
+    for (uint32_t e = 0; e < edge_constraints->num_edges; e++) {
+
+        uint32_t v0 = edge_constraints->edge_vertices[2 * e];
+        uint32_t v1 = edge_constraints->edge_vertices[2 * e + 1];
+
+        fprintf(stderr, "\nedge %u:\n", e);
+        fprintf(stderr, "  tetrahedrized endpoint idx = (%u, %u)\n", v0, v1);
+
+        if (v0 < mesh->num_vertices && v1 < mesh->num_vertices) {
+            fprintf(stderr, "  endpoint coordinates:\n");
+            fprintf(stderr, "    v0 = (%f, %f, %f)\n",
+                    mesh->vertices[v0].coord[0],
+                    mesh->vertices[v0].coord[1],
+                    mesh->vertices[v0].coord[2]);
+            fprintf(stderr, "    v1 = (%f, %f, %f)\n",
+                    mesh->vertices[v1].coord[0],
+                    mesh->vertices[v1].coord[1],
+                    mesh->vertices[v1].coord[2]);
+        } else {
+            fprintf(stderr, "  ERROR: endpoint idx out of range!\n");
+            continue;
+        }
+
+        // Allocate per-edge mark
+        uint32_t* mark = (uint32_t*)calloc(mesh->tet_num, sizeof(uint32_t));
+
+        uint64_t* touched = NULL;
+        uint64_t num_touched = 0;
+
+        trace_segment_through_tets(mesh, v0, v1, mark,
+                                   &touched, &num_touched);
+
+        // --- fill in v1 incident tets (the while-loop only collects up to v_stop) ---
+        {
+            uint64_t num_v1 = 0;
+            uint64_t* v1_tets = mesh->incident_tetrahedra(v1, &num_v1);
+            for (uint64_t i = 0; i < num_v1; i++) {
+                if (mark[v1_tets[i]] == 0) {
+                    mark[v1_tets[i]] = 1;  // mark as visited
+                    // append to touched list
+                    uint64_t old = num_touched;
+                    uint64_t one = 1;
+                    enqueueTetsArray(&v1_tets[i], one, &touched, &num_touched);
+                    // enqueueTetsArray does a realloc; ensure the old size is tracked
+                    // (enqueueTetsArray handles this internally)
+                    (void)old;
+                }
+            }
+            free(v1_tets);
+        }
+
+        fprintf(stderr, "  touched tet count = %llu\n", (unsigned long long)num_touched);
+
+        if (num_touched > 0) {
+            fprintf(stderr, "  touched tet ids: ");
+            for (uint64_t i = 0; i < num_touched; i++)
+                fprintf(stderr, "%llu ", (unsigned long long)touched[i]);
+            fprintf(stderr, "\n");
+
+            // Print first touched tet details
+            uint64_t first_tet = touched[0];
+            uint32_t tv[4];
+            std::memcpy(tv, mesh->tet_node + 4 * first_tet, 4 * sizeof(uint32_t));
+            fprintf(stderr, "  first touched tet (%llu) vertices: [%u, %u, %u, %u]\n",
+                    (unsigned long long)first_tet, tv[0], tv[1], tv[2], tv[3]);
+            fprintf(stderr, "    vertex coordinates:\n");
+            for (int i = 0; i < 4; i++) {
+                if (tv[i] < mesh->num_vertices && tv[i] != UINT32_MAX) {
+                    fprintf(stderr, "      %u: (%f, %f, %f)\n", tv[i],
+                            mesh->vertices[tv[i]].coord[0],
+                            mesh->vertices[tv[i]].coord[1],
+                            mesh->vertices[tv[i]].coord[2]);
+                } else if (tv[i] == UINT32_MAX) {
+                    fprintf(stderr, "      %u: (ghost)\n", tv[i]);
+                } else {
+                    fprintf(stderr, "      %u: (out of range)\n", tv[i]);
+                }
+            }
+        } else {
+            fprintf(stderr, "  WARNING: no touched tets found!\n");
+        }
+
+        free(touched);
+        free(mark);
+    }
+
+    fprintf(stderr, "=== End Edge Constraint Debug ===\n\n");
+}
 
 //  Input: pointer to the mesh,
 //         indices of a constraint-tiangle vertices: constraints_vrts,
