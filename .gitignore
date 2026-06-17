@@ -1,1 +1,29 @@
+# 构建目录
 build
+build_alt/
+build_plain/
+build_release/
+
+# 编译命令数据库
+compile_commands.json
+
+# 测试文件
+tests/
+
+# 工作脚本
+scripts/
+
+# 日志
+logs/
+
+# 输出网格
+output/
+
+# 临时文件
+tmp/
+
+# 未初始化的子模块
+fTetWild/
+
+# 新补充的模型文件
+models/EADS_Mako_HEAT*.off
