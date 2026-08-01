@@ -27,3 +27,4 @@ fTetWild/
 
 # 新补充的模型文件
 models/EADS_Mako_HEAT*.off
+.local.cmake
