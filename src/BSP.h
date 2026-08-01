@@ -212,11 +212,27 @@ class BSPcomplex{
     // Save the faces representing the input constraints
     void saveBlackFaces(const char* filename, bool triangulate = false);
 
-    // Save the faces that separate in and out
-    void saveSkin(const char* filename, const char bool_opcode, bool triangulate = false);
+    // Save the faces that separate in and out. Optionally write the exact same
+    // triangles as a high-precision ASCII STL surface.
+    void saveSkin(const char* filename, const char bool_opcode, bool triangulate = false,
+                  const char* stl_filename = NULL);
+
+    // Save only the material boundary connected to the unbounded exterior region.
+    // Optionally write the exact same triangles as a high-precision ASCII STL.
+    void saveOuterSkin(const char* filename, const char bool_opcode, bool triangulate = false,
+                       const char* stl_filename = NULL);
 
     // Save the mesh
     void saveMesh(const char* filename, const char bool_opcode, bool tetrahedrize = false);
+
+    // Save the tetrahedralized volume mesh as VTU (VTK XML Unstructured Grid)
+    void saveVTU(const char* filename, const char bool_opcode);
+
+    // Save the tetrahedralized volume mesh as Abaqus/CalculiX INP (C3D4)
+    void saveINP(const char* filename, const char bool_opcode);
+
+    // Generate tetrahedra once and write both requested volume formats
+    void saveVolumeFiles(const char* vtu_filename, const char* inp_filename, const char bool_opcode);
 
     // Makes a triangle mesh out of the skin faces
     void extractSkinTriMesh(const char* filename, const char bool_opcode, 

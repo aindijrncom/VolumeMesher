@@ -210,7 +210,7 @@ void logger(FILE* fp, const char* msg, ...)
     strcpy(fmt, msg);
     vsprintf(fms, fmt, ap);
 
-    fprintf(fp, fms);
+    fprintf(fp, "%s", fms);
 
     va_end(ap);
 }
@@ -438,7 +438,7 @@ BSPcomplex* makePolyhedralMesh(
         if (logfile == NULL)
         {
             logfile = fopen("mesh_generator.log", "a");
-            logger(logfile, "Filename,Delaunay,Virtual,Mapping,Total Delaunay,Conversion,Subdivision,Face Coloring,In-Out,Total BSP,TOTAL,Mem\n");
+            logger(logfile, "t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11\n");
         }
         else logfile = freopen("mesh_generator.log", "a", logfile);
 
@@ -525,7 +525,7 @@ BSPcomplex* makePolyhedralMesh(
     }
 
     clock_t time2 = clock();
-    if (verbose) printf("\tDelaunay insertion: %f s\n", (double)(time2 - time1) / CLOCKS_PER_SEC);
+    if (verbose) printf("\tMesh seeding: %f s\n", (double)(time2 - time1) / CLOCKS_PER_SEC);
 
     //--Half-Edges-and-Virtual-Constraints----------------------
 
@@ -535,12 +535,12 @@ BSPcomplex* makePolyhedralMesh(
     sort_half_edges(half_edges, 3 * constraints->num_triangles);
 
     uint32_t nvc = place_virtual_constraints(mesh, constraints, half_edges);
-    if (verbose) printf("\t%u virtual constraints added\n", nvc);
+    if (verbose) printf("\t%u constraints added\n", nvc);
 
     free(half_edges);
 
     clock_t time3 = clock();
-    if (verbose) printf("\tHalf-edges: %f s\n", (double)(time3 - time2) / CLOCKS_PER_SEC);
+    if (verbose) printf("\tConforming: %f s\n", (double)(time3 - time2) / CLOCKS_PER_SEC);
 
     //--Map-Tetrahedra-Constraint-Intersections----------------
 
@@ -574,14 +574,16 @@ BSPcomplex* makePolyhedralMesh(
 
     // --- MVP-0: debug edge tracing ---
     if (edge_constraints != NULL) {
+#ifndef NDEBUG
         debug_trace_edge_constraints(mesh, edge_constraints);
+#endif
     }
 
     clock_t time4 = clock();
-    if (verbose) printf("\tMap creation: %f s\n", (double)(time4 - time3) / CLOCKS_PER_SEC);
+    if (verbose) printf("\tMap: %f s\n", (double)(time4 - time3) / CLOCKS_PER_SEC);
 
     double DEL_time = (double)(time4 - time0) / CLOCKS_PER_SEC;
-    if (verbose) printf("TOTAL Delaunay+map: %f s\n\n", DEL_time);
+    if (verbose) printf("Phase 1: %f s\n\n", DEL_time);
 
     initFPU(); // From here on we need indirect predicates
 
@@ -614,7 +616,7 @@ BSPcomplex* makePolyhedralMesh(
     if (edge_constraints != NULL) delete edge_constraints;
 
     clock_t time5 = clock();
-    if (verbose) printf("\tDelaunay -> Complex %lf s\n", (double)(time5 - time4) / CLOCKS_PER_SEC);
+    if (verbose) printf("\tBuild: %lf s\n", (double)(time5 - time4) / CLOCKS_PER_SEC);
     if (verbose) printf("\tInitial cells: %llu\n", complex.cells.size());
 
     //-Subdivision----------------------------------------------------------------
@@ -637,7 +639,7 @@ BSPcomplex* makePolyhedralMesh(
         else  cell_ind++;
     }
     clock_t time6 = clock();
-    if (verbose) printf("\tCell subdivision %f s\n", (double)(time6 - time5) / CLOCKS_PER_SEC);
+    if (verbose) printf("\tSubdivision %f s\n", (double)(time6 - time5) / CLOCKS_PER_SEC);
     if (verbose) printf("\tFinal cells: %llu\n", complex.cells.size());
 
 
@@ -655,19 +657,19 @@ BSPcomplex* makePolyhedralMesh(
     }
 
     clock_t time7 = clock();
-    if (verbose) printf("\tFind black faces %f s\n", (double)(time7 - time6) / CLOCKS_PER_SEC);
+    if (verbose) printf("\tClassify faces %f s\n", (double)(time7 - time6) / CLOCKS_PER_SEC);
 
     //-Classification:intrenal/external cells-------------------------------------
     complex.constraintsSurface_complexPartition(bool_opcode != '0');
 
     clock_t time8 = clock();
-    if (verbose) printf("\tInt-ext class. %f s\n", (double)(time8 - time7) / CLOCKS_PER_SEC);
+    if (verbose) printf("\tCell labeling %f s\n", (double)(time8 - time7) / CLOCKS_PER_SEC);
 
 
     clock_t time9 = clock();
     double BSP_time = (double)(time9 - time4) / CLOCKS_PER_SEC;
-    if (verbose) printf("TOTAL BSP: %f s\n\n", BSP_time);
-    if (verbose) printf("TOTAL time: %f s\n\n", BSP_time + DEL_time);
+    if (verbose) printf("Build total: %f s\n\n", BSP_time);
+    if (verbose) printf("Total: %f s\n\n", BSP_time + DEL_time);
     if (verbose) PrintMemoryInfo();
 
     if (logging)

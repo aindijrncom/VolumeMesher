@@ -1,6 +1,9 @@
 #include <iostream>
 #include <fstream>
 #include <set>
+#include <cmath>
+#include <iomanip>
+#include <limits>
 #include <time.h>
 #include <algorithm>
 #include "BSP.h"
@@ -14,6 +17,70 @@
 #define REMOVE_ELEM_VECT(e,v) v.erase(std::find(v.begin(), v.end(), e))
 #define IS_GHOST_CELL(c) (c==UINT64_MAX)
 #define IS_GHOST_TET(t) (mesh->tet_node[4*t+3]==UINT32_MAX)
+
+// Write one oriented triangle using double coordinates and 17 significant
+// digits. Binary STL stores only float32 coordinates, so ASCII STL is used for
+// the high-precision surface export.
+static void writeHighPrecisionSTLFacet(
+    std::ofstream& file,
+    const std::vector<genericPoint*>& vertices,
+    const std::vector<uint32_t>& face_vertices,
+    bool reverse_winding)
+{
+    if (face_vertices.size() != 3)
+        ip_error("High-precision STL export requires triangulated faces.\n");
+
+    double coordinates[3][3];
+    for (uint32_t local_vertex = 0; local_vertex < 3; ++local_vertex)
+    {
+        const uint32_t source_vertex = reverse_winding
+            ? face_vertices[2 - local_vertex]
+            : face_vertices[local_vertex];
+        if (!vertices[source_vertex]->getApproxXYZCoordinates(
+                coordinates[local_vertex][0], coordinates[local_vertex][1],
+                coordinates[local_vertex][2], true) ||
+            !std::isfinite(coordinates[local_vertex][0]) ||
+            !std::isfinite(coordinates[local_vertex][1]) ||
+            !std::isfinite(coordinates[local_vertex][2]))
+            ip_error("Cannot approximate a surface-mesh node coordinate.\n");
+    }
+
+    const double edge0[3] = {
+        coordinates[1][0] - coordinates[0][0],
+        coordinates[1][1] - coordinates[0][1],
+        coordinates[1][2] - coordinates[0][2]
+    };
+    const double edge1[3] = {
+        coordinates[2][0] - coordinates[0][0],
+        coordinates[2][1] - coordinates[0][1],
+        coordinates[2][2] - coordinates[0][2]
+    };
+    double normal[3] = {
+        edge0[1] * edge1[2] - edge0[2] * edge1[1],
+        edge0[2] * edge1[0] - edge0[0] * edge1[2],
+        edge0[0] * edge1[1] - edge0[1] * edge1[0]
+    };
+    const double normal_length = std::sqrt(
+        normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+    if (normal_length > 0.0 && std::isfinite(normal_length))
+    {
+        normal[0] /= normal_length;
+        normal[1] /= normal_length;
+        normal[2] /= normal_length;
+    }
+    else
+    {
+        normal[0] = normal[1] = normal[2] = 0.0;
+    }
+
+    file << "  facet normal " << normal[0] << " " << normal[1] << " " << normal[2] << "\n";
+    file << "    outer loop\n";
+    for (uint32_t local_vertex = 0; local_vertex < 3; ++local_vertex)
+        file << "      vertex " << coordinates[local_vertex][0] << " "
+             << coordinates[local_vertex][1] << " " << coordinates[local_vertex][2] << "\n";
+    file << "    endloop\n";
+    file << "  endfacet\n";
+}
 
 //----------------
 // General purpose
@@ -60,7 +127,9 @@ inline uint32_t consecEdges_common_endpt(uint32_t u0, uint32_t u1,
     if(u0 == v0 || u0 == v1) return u0;
     if(u1 == v0 || u1 == v1) return u1;
     // If goes here, something wrong.
+#ifndef NDEBUG
     printf("\n[BSP.cpp]consecEdges_common_endpt: ERROR no match.\n");
+#endif
     return UINT32_MAX;
 }
 
@@ -72,7 +141,9 @@ inline uint32_t other_edge_endpt(uint32_t u0, uint32_t u1, uint32_t w){
     if(w == u0) return u1;
     if(w == u1) return u0;
     // If goes here, something wrong.
+#ifndef NDEBUG
     printf("\n[BSP.cpp]other_edge_endpt_ind: ERROR no match.\n");
+#endif
     return UINT32_MAX;
 
 }
@@ -1512,7 +1583,9 @@ void BSPcomplex::fixCommonFaceOrientation(uint64_t cf_id)
         if (ori > 0) {
             if (f.conn_cells[1] == UINT64_MAX)
             {
+#ifndef NDEBUG
                 printf("Mmh... this should not happen\n");
+#endif
                 return;
             }
             std::swap(f.conn_cells[0], f.conn_cells[1]);
@@ -2214,7 +2287,9 @@ uint64_t BSPcomplex::triFace_shareEdge(const BSPcell& cell, uint64_t face_ind,
   }
 
   // never reached
+#ifndef NDEBUG
   printf("[BSP.cpp]BSPcomplex::triFace_shareEdge: ERROR return UINT64_MAX.\n");
+#endif
   return UINT64_MAX;
 }
 
@@ -2717,9 +2792,10 @@ void BSPcomplex::extractSkinTriMesh(const char* filename, const char bool_opcode
 }
 
 
-void BSPcomplex::saveSkin(const char *filename, const char bool_opcode, bool triangulate) {
+void BSPcomplex::saveSkin(const char *filename, const char bool_opcode, bool triangulate,
+                          const char* stl_filename) {
 
-    if (triangulate)
+    if (triangulate || stl_filename != NULL)
     {
         const uint64_t num_faces = faces.size();
         for (uint64_t face_ind = 0; face_ind < num_faces; face_ind++) triangulateFace(face_ind);
@@ -2770,7 +2846,17 @@ void BSPcomplex::saveSkin(const char *filename, const char bool_opcode, bool tri
     ofstream f(filename);
 
     if (!f)
-        ip_error("BSPcomplex::saveSkin: cannot open the file.\n");
+        ip_error("Failed to open surface output file.\n");
+
+    ofstream stl_file;
+    if (stl_filename != NULL)
+    {
+        stl_file.open(stl_filename);
+        if (!stl_file)
+            ip_error("Failed to open high-precision STL output file.\n");
+        stl_file << std::setprecision(17);
+        stl_file << "solid VolumeMesher_skin\n";
+    }
 
     f << "OFF\n";
     f << num_v << " ";
@@ -2789,16 +2875,198 @@ void BSPcomplex::saveSkin(const char *filename, const char bool_opcode, bool tri
             list_faceVertices(face, face_vrts);
             f << face_vrts.size();
 
-            if (cells[face.conn_cells[0]].place == INTERNAL_A)
+            const bool reverse_winding = (cells[face.conn_cells[0]].place == INTERNAL_A);
+            if (reverse_winding)
                 for (uint32_t v = (uint32_t)face_vrts.size(); v > 0; v--) f << " " << vmap[face_vrts[v - 1]];
             else
                 for (uint32_t v = 0; v < face_vrts.size(); v++) f << " " << vmap[face_vrts[v]];
 
             f << "\n";
+            if (stl_filename != NULL)
+                writeHighPrecisionSTLFacet(stl_file, vertices, face_vrts, reverse_winding);
         }
 
     f.close();
+    if (stl_filename != NULL)
+    {
+        stl_file << "endsolid VolumeMesher_skin\n";
+        stl_file.close();
+    }
 
+}
+
+
+// Save only faces separating material cells from the external-cell component
+// connected to the finite BSP domain boundary. Enclosed voids are intentionally
+// excluded. Cell labels are read but never modified, so saveSkin() keeps its
+// original complete-boundary behavior.
+void BSPcomplex::saveOuterSkin(const char* filename, const char bool_opcode, bool triangulate,
+                               const char* stl_filename)
+{
+    if (triangulate || stl_filename != NULL)
+    {
+        const uint64_t num_faces = faces.size();
+        for (uint64_t face_ind = 0; face_ind < num_faces; ++face_ind)
+            triangulateFace(face_ind);
+    }
+
+    std::vector<unsigned char> material_cells(cells.size(), 0);
+    for (size_t cell_ind = 0; cell_ind < cells.size(); ++cell_ind)
+    {
+        const uint32_t place = cells[cell_ind].place;
+        bool is_material = false;
+        if (bool_opcode == '0')
+            is_material = (place == INTERNAL_A);
+        else if (bool_opcode == 'U')
+            is_material = (place == INTERNAL_A || place == INTERNAL_B || place == INTERNAL_AB);
+        else if (bool_opcode == 'I')
+            is_material = (place == INTERNAL_AB);
+        else if (bool_opcode == 'D')
+            is_material = (place == INTERNAL_A);
+        else
+            ip_error("Invalid boolean opcode for outer-skin extraction.\n");
+
+        material_cells[cell_ind] = is_material ? 1 : 0;
+    }
+
+    // Seed the unbounded exterior from non-material cells touching the finite
+    // BSP domain boundary, then flood through adjacent non-material cells.
+    std::vector<unsigned char> unbounded_exterior(cells.size(), 0);
+    std::vector<uint64_t> pending_cells;
+    for (const BSPface& face : faces)
+    {
+        const bool touches_domain_boundary =
+            (face.conn_cells[0] == UINT64_MAX || face.conn_cells[1] == UINT64_MAX);
+        if (!touches_domain_boundary)
+            continue;
+
+        for (uint32_t side = 0; side < 2; ++side)
+        {
+            const uint64_t cell_ind = face.conn_cells[side];
+            if (cell_ind == UINT64_MAX || material_cells[cell_ind] || unbounded_exterior[cell_ind])
+                continue;
+
+            unbounded_exterior[cell_ind] = 1;
+            pending_cells.push_back(cell_ind);
+        }
+    }
+
+    while (!pending_cells.empty())
+    {
+        const uint64_t cell_ind = pending_cells.back();
+        pending_cells.pop_back();
+
+        for (uint64_t face_ind : cells[cell_ind].faces)
+        {
+            const BSPface& face = faces[face_ind];
+            for (uint32_t side = 0; side < 2; ++side)
+            {
+                const uint64_t adjacent_cell = face.conn_cells[side];
+                if (adjacent_cell == UINT64_MAX || material_cells[adjacent_cell] ||
+                    unbounded_exterior[adjacent_cell])
+                    continue;
+
+                unbounded_exterior[adjacent_cell] = 1;
+                pending_cells.push_back(adjacent_cell);
+            }
+        }
+    }
+
+    std::vector<unsigned char> outer_faces(faces.size(), 0);
+    std::vector<unsigned char> used_vertices(vertices.size(), 0);
+    uint64_t num_outer_faces = 0;
+
+    for (uint64_t face_ind = 0; face_ind < faces.size(); ++face_ind)
+    {
+        const BSPface& face = faces[face_ind];
+        bool has_material_cell = false;
+        bool touches_unbounded_exterior = false;
+
+        for (uint32_t side = 0; side < 2; ++side)
+        {
+            const uint64_t cell_ind = face.conn_cells[side];
+            if (cell_ind == UINT64_MAX)
+                touches_unbounded_exterior = true;
+            else if (material_cells[cell_ind])
+                has_material_cell = true;
+            else if (unbounded_exterior[cell_ind])
+                touches_unbounded_exterior = true;
+        }
+
+        if (!has_material_cell || !touches_unbounded_exterior)
+            continue;
+
+        outer_faces[face_ind] = 1;
+        ++num_outer_faces;
+        for (uint64_t edge_ind : face.edges)
+        {
+            used_vertices[edges[edge_ind].vertices[0]] = 1;
+            used_vertices[edges[edge_ind].vertices[1]] = 1;
+        }
+    }
+
+    std::vector<uint32_t> vertex_map(vertices.size(), 0);
+    uint32_t num_outer_vertices = 0;
+    for (size_t vertex_ind = 0; vertex_ind < vertices.size(); ++vertex_ind)
+    {
+        vertex_map[vertex_ind] = num_outer_vertices;
+        if (used_vertices[vertex_ind])
+            ++num_outer_vertices;
+    }
+
+    ofstream file(filename);
+    if (!file)
+        ip_error("Failed to open outer-surface output file.\n");
+
+    ofstream stl_file;
+    if (stl_filename != NULL)
+    {
+        stl_file.open(stl_filename);
+        if (!stl_file)
+            ip_error("Failed to open high-precision outer STL output file.\n");
+        stl_file << std::setprecision(17);
+        stl_file << "solid VolumeMesher_skin_outer\n";
+    }
+
+    file << "OFF\n";
+    file << num_outer_vertices << " " << num_outer_faces << " 0\n";
+
+    for (uint32_t vertex_ind = 0; vertex_ind < vertices.size(); ++vertex_ind)
+        if (used_vertices[vertex_ind])
+            file << (*vertices[vertex_ind]) << "\n";
+
+    for (uint64_t face_ind = 0; face_ind < faces.size(); ++face_ind)
+    {
+        if (!outer_faces[face_ind])
+            continue;
+
+        BSPface& face = faces[face_ind];
+        vector<uint32_t> face_vertices(face.edges.size(), UINT32_MAX);
+        list_faceVertices(face, face_vertices);
+        file << face_vertices.size();
+
+        const uint64_t first_cell = face.conn_cells[0];
+        const bool first_cell_is_material =
+            (first_cell != UINT64_MAX && material_cells[first_cell]);
+        if (first_cell_is_material)
+            for (uint32_t vertex = static_cast<uint32_t>(face_vertices.size()); vertex > 0; --vertex)
+                file << " " << vertex_map[face_vertices[vertex - 1]];
+        else
+            for (uint32_t vertex = 0; vertex < face_vertices.size(); ++vertex)
+                file << " " << vertex_map[face_vertices[vertex]];
+
+        file << "\n";
+        if (stl_filename != NULL)
+            writeHighPrecisionSTLFacet(
+                stl_file, vertices, face_vertices, first_cell_is_material);
+    }
+
+    file.close();
+    if (stl_filename != NULL)
+    {
+        stl_file << "endsolid VolumeMesher_skin_outer\n";
+        stl_file.close();
+    }
 }
 
 
@@ -2808,7 +3076,7 @@ void BSPcomplex::saveMesh(const char* filename, const char bool_opcode, bool tet
 {
     ofstream f(filename);
 
-    if (!f) ip_error("\nBSPcomplex::[BSP.cpp]saveTetMesh: FATAL ERROR cannot open the file.\n");
+    if (!f) ip_error("Failed to open mesh output file.\n");
 
     const uint64_t num_faces = faces.size();
 
@@ -2854,7 +3122,7 @@ void BSPcomplex::saveMesh(const char* filename, const char bool_opcode, bool tet
         for (uint32_t v = 0; v < vertices.size(); v++) if (vrts_visit[v]) f << (*vertices[v]) << "\n";
 
         // Print tets
-        for (uint32_t t = 0; t < final_tets.size(); t += 4)
+        for (size_t t = 0; t < final_tets.size(); t += 4)
             f << "4 " << vmap[final_tets[t]] << " "
             << vmap[final_tets[t + 1]] << " "
             << vmap[final_tets[t + 2]] << " "
@@ -2911,11 +3179,268 @@ void BSPcomplex::saveMesh(const char* filename, const char bool_opcode, bool tet
 }
 
 
+//
+//
+void BSPcomplex::saveVTU(const char* filename, const char bool_opcode)
+{
+    saveVolumeFiles(filename, NULL, bool_opcode);
+}
+
+
+//
+//
+void BSPcomplex::saveINP(const char* filename, const char bool_opcode)
+{
+    saveVolumeFiles(NULL, filename, bool_opcode);
+}
+
+
+// Generate the tetrahedral decomposition once so VTU and INP use exactly the
+// same node map and C3D4 connectivity. A null filename skips that format.
+void BSPcomplex::saveVolumeFiles(
+    const char* vtu_filename, const char* inp_filename, const char bool_opcode)
+{
+    if (vtu_filename == NULL && inp_filename == NULL)
+        ip_error("At least one volume output filename is required.\n");
+
+    const uint64_t num_faces = faces.size();
+    for (uint64_t face_ind = 0; face_ind < num_faces; face_ind++)
+        triangulateFace(face_ind);
+
+    if (bool_opcode == 'U') {
+        for (BSPcell& cell : cells)
+            cell.place = (cell.place == INTERNAL_A || cell.place == INTERNAL_B || cell.place == INTERNAL_AB) ? (INTERNAL_A) : (EXTERNAL);
+    } else if (bool_opcode == 'I') {
+        for (BSPcell& cell : cells)
+            cell.place = (cell.place == INTERNAL_AB) ? (INTERNAL_A) : (EXTERNAL);
+    } else if (bool_opcode == 'D') {
+        for (BSPcell& cell : cells)
+            cell.place = (cell.place == INTERNAL_A && !(cell.place == INTERNAL_AB)) ? (INTERNAL_A) : (EXTERNAL);
+    }
+
+    makeTetrahedra();
+
+    if (final_tets.size() % 4 != 0)
+        ip_error("Invalid tetrahedral connectivity size.\n");
+    if (vertices.size() > std::numeric_limits<uint32_t>::max() ||
+        final_tets.size() / 4 > std::numeric_limits<uint32_t>::max())
+        ip_error("Volume mesh is too large for 32-bit output indices.\n");
+
+    for (size_t tet = 0; tet < final_tets.size(); tet += 4)
+    {
+        const uint32_t v0 = final_tets[tet];
+        const uint32_t v1 = final_tets[tet + 1];
+        const uint32_t v2 = final_tets[tet + 2];
+        const uint32_t v3 = final_tets[tet + 3];
+        if (v0 >= vertices.size() || v1 >= vertices.size() ||
+            v2 >= vertices.size() || v3 >= vertices.size())
+            ip_error("Tetrahedral connectivity references an invalid vertex.\n");
+        if (v0 == v1 || v0 == v2 || v0 == v3 || v1 == v2 || v1 == v3 || v2 == v3 ||
+            genericPoint::orient3D(*vertices[v0], *vertices[v1], *vertices[v2], *vertices[v3]) == 0)
+            ip_error("Cannot export a degenerate tetrahedron.\n");
+    }
+
+    // Convert exact/implicit points once to the double coordinates written to
+    // solver files. A tetrahedron can be exact-nondegenerate yet collapse after
+    // this conversion; such a C3D4 has no representable volume and is omitted.
+    std::vector<double> output_coordinates(vertices.size() * 3, 0.0);
+    for (size_t vertex = 0; vertex < vertices.size(); ++vertex)
+    {
+        double* coordinates = output_coordinates.data() + vertex * 3;
+        if (!vertices[vertex]->getApproxXYZCoordinates(
+                coordinates[0], coordinates[1], coordinates[2], true) ||
+            !std::isfinite(coordinates[0]) || !std::isfinite(coordinates[1]) ||
+            !std::isfinite(coordinates[2]))
+            ip_error("Cannot approximate a volume-mesh node coordinate.\n");
+    }
+
+    std::vector<uint32_t> output_tets;
+    output_tets.reserve(final_tets.size());
+    uint32_t reoriented_tets = 0;
+    uint32_t omitted_tets = 0;
+    for (size_t tet = 0; tet < final_tets.size(); tet += 4)
+    {
+        uint32_t tet_vertices[4] = {
+            final_tets[tet], final_tets[tet + 1], final_tets[tet + 2], final_tets[tet + 3]
+        };
+        const double* a = output_coordinates.data() + static_cast<size_t>(tet_vertices[0]) * 3;
+        const double* b = output_coordinates.data() + static_cast<size_t>(tet_vertices[1]) * 3;
+        const double* c = output_coordinates.data() + static_cast<size_t>(tet_vertices[2]) * 3;
+        const double* d = output_coordinates.data() + static_cast<size_t>(tet_vertices[3]) * 3;
+        const double* tet_points[4] = { a, b, c, d };
+
+        double coordinate_scale = 1.0;
+        for (uint32_t vertex = 0; vertex < 4; ++vertex)
+            for (uint32_t component = 0; component < 3; ++component)
+                coordinate_scale = std::max(coordinate_scale, std::abs(tet_points[vertex][component]));
+        const double coincident_tolerance =
+            32.0 * std::numeric_limits<double>::epsilon() * coordinate_scale;
+        const double coincident_tolerance_squared = coincident_tolerance * coincident_tolerance;
+
+        bool has_unrepresentable_edge = false;
+        for (uint32_t first = 0; first < 4 && !has_unrepresentable_edge; ++first)
+            for (uint32_t second = first + 1; second < 4; ++second)
+            {
+                const double dx = tet_points[first][0] - tet_points[second][0];
+                const double dy = tet_points[first][1] - tet_points[second][1];
+                const double dz = tet_points[first][2] - tet_points[second][2];
+                if (dx * dx + dy * dy + dz * dz <= coincident_tolerance_squared)
+                {
+                    has_unrepresentable_edge = true;
+                    break;
+                }
+            }
+
+        if (has_unrepresentable_edge)
+        {
+            ++omitted_tets;
+            continue;
+        }
+
+        const double bax = b[0] - a[0];
+        const double bay = b[1] - a[1];
+        const double baz = b[2] - a[2];
+        const double cax = c[0] - a[0];
+        const double cay = c[1] - a[1];
+        const double caz = c[2] - a[2];
+        const double dax = d[0] - a[0];
+        const double day = d[1] - a[1];
+        const double daz = d[2] - a[2];
+        const double determinant =
+            bax * (cay * daz - caz * day) -
+            bay * (cax * daz - caz * dax) +
+            baz * (cax * day - cay * dax);
+        const double determinant_permanent =
+            std::abs(bax) * (std::abs(cay * daz) + std::abs(caz * day)) +
+            std::abs(bay) * (std::abs(cax * daz) + std::abs(caz * dax)) +
+            std::abs(baz) * (std::abs(cax * day) + std::abs(cay * dax));
+        const double determinant_error_bound =
+            32.0 * std::numeric_limits<double>::epsilon() * determinant_permanent;
+
+        if (std::abs(determinant) <= determinant_error_bound)
+        {
+            ++omitted_tets;
+            continue;
+        }
+        if (determinant < 0.0)
+        {
+            std::swap(tet_vertices[0], tet_vertices[1]);
+            ++reoriented_tets;
+        }
+        output_tets.insert(output_tets.end(), tet_vertices, tet_vertices + 4);
+    }
+
+    if (omitted_tets > 0)
+        fprintf(stderr,
+            "Warning: omitted %u tetrahedra with indeterminate double-precision Jacobians.\n",
+            omitted_tets);
+    if (reoriented_tets > 0)
+        fprintf(stderr,
+            "Warning: reoriented %u tetrahedra for positive double-precision Jacobians.\n",
+            reoriented_tets);
+
+    for (size_t i = 0; i < vrts_visit.size(); i++) vrts_visit[i] = 0;
+    for (uint32_t vertex : output_tets)
+        vrts_visit[vertex] = 1;
+
+    uint32_t final_numver = 0;
+    std::vector<uint32_t> vmap(vertices.size(), 0);
+    for (size_t i = 0; i < vrts_visit.size(); i++) {
+        vmap[i] = final_numver;
+        if (vrts_visit[i]) final_numver++;
+    }
+
+    uint32_t num_tets = static_cast<uint32_t>(output_tets.size() / 4);
+
+    if (vtu_filename != NULL)
+    {
+        ofstream f(vtu_filename);
+        if (!f) ip_error("Failed to open VTU output file.\n");
+        f << std::setprecision(17);
+
+        f << "<?xml version=\"1.0\"?>\n";
+        f << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
+        f << "  <UnstructuredGrid>\n";
+        f << "    <Piece NumberOfPoints=\"" << final_numver
+          << "\" NumberOfCells=\"" << num_tets << "\">\n";
+
+        f << "      <Points>\n";
+        f << "        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+        for (uint32_t v = 0; v < vertices.size(); v++)
+            if (vrts_visit[v])
+            {
+                const double* coordinates = output_coordinates.data() + static_cast<size_t>(v) * 3;
+                f << coordinates[0] << " " << coordinates[1] << " " << coordinates[2] << "\n";
+            }
+        f << "        </DataArray>\n";
+        f << "      </Points>\n";
+
+        f << "      <Cells>\n";
+        f << "        <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">\n";
+        for (size_t t = 0; t < output_tets.size(); t += 4)
+            f << vmap[output_tets[t]] << " "
+              << vmap[output_tets[t + 1]] << " "
+              << vmap[output_tets[t + 2]] << " "
+              << vmap[output_tets[t + 3]] << "\n";
+        f << "        </DataArray>\n";
+        f << "        <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">\n";
+        for (uint32_t t = 0; t < num_tets; t++)
+            f << ((t + 1) * 4) << "\n";
+        f << "        </DataArray>\n";
+        f << "        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
+        for (uint32_t t = 0; t < num_tets; t++)
+            f << "10\n";
+        f << "        </DataArray>\n";
+        f << "      </Cells>\n";
+
+        f << "    </Piece>\n";
+        f << "  </UnstructuredGrid>\n";
+        f << "</VTKFile>\n";
+        f.close();
+    }
+
+    if (inp_filename != NULL)
+    {
+        ofstream f(inp_filename);
+        if (!f) ip_error("Failed to open INP output file.\n");
+        f << std::setprecision(17);
+
+        f << "*HEADING\n";
+        f << "** VolumeMesher tetrahedral volume mesh\n";
+        f << "** Nodes: " << final_numver << ", Elements: " << num_tets << "\n";
+        f << "*NODE\n";
+        for (uint32_t v = 0; v < vertices.size(); ++v)
+        {
+            if (!vrts_visit[v])
+                continue;
+
+            const double* coordinates = output_coordinates.data() + static_cast<size_t>(v) * 3;
+            f << (vmap[v] + 1) << ", " << coordinates[0] << ", "
+              << coordinates[1] << ", " << coordinates[2] << "\n";
+        }
+
+        f << "*ELEMENT, TYPE=C3D4, ELSET=VOLUME\n";
+        for (uint32_t tet = 0; tet < num_tets; ++tet)
+        {
+            const size_t offset = static_cast<size_t>(tet) * 4;
+            f << (tet + 1) << ", "
+              << (vmap[output_tets[offset]] + 1) << ", "
+              << (vmap[output_tets[offset + 1]] + 1) << ", "
+              << (vmap[output_tets[offset + 2]] + 1) << ", "
+              << (vmap[output_tets[offset + 3]] + 1) << "\n";
+        }
+        f.close();
+    }
+
+    final_tets.clear();
+}
+
+
 void BSPcomplex::saveBlackFaces(const char* filename, bool triangulate) {
     ofstream f(filename);
 
     if (!f)
-        ip_error("BSPcomplex::saveBlackFaces: cannot open the file.\n");
+        ip_error("Failed to open constraints output file.\n");
 
     if (triangulate)
     {
@@ -3004,4 +3529,3 @@ size_t BSPcomplex::getStructureSize() const
 
     return tot;
 }
-

@@ -140,7 +140,7 @@ void TetMesh::saveTET(const char* filename)
 {
     ofstream f(filename);
 
-    if (!f) ip_error("\nTetMesh::saveTET: FATAL ERROR cannot open the file.\n");
+    if (!f) ip_error("\nFailed to open tet mesh output file.\n");
 
     f << num_vertices << " vertices\n";
 
@@ -286,7 +286,7 @@ double TetMesh::vertexInTetSphere(uint64_t tet, uint32_t v_id){
     if (det == 0.0) {
       uint32_t nn[5] = {Node[0],Node[1],Node[2],oppositeNode,v_id};
       det = -symbolicPerturbation (nn, a,b,c,oppositeVertex,e);
-      if (det == 0.0) ip_error("Symbolic perturbation failed\n");
+      if (det == 0.0) ip_error("Internal degeneracy detected\n");
     }
     return det;
   }
@@ -304,7 +304,7 @@ double TetMesh::vertexInTetSphere(uint64_t tet, uint32_t v_id){
   if (det == 0.0) {
     uint32_t nn[5] = {Node[0],Node[1],Node[2],Node[3],v_id};
     det = symbolicPerturbation (nn, a,b,c,d,e);
-    if (det == 0.0) ip_error("Symbolic perturbation failed! This should never happen :-(\n");
+    if (det == 0.0) ip_error("Internal degeneracy detected\n");
   }
   return det;
 }

@@ -1353,7 +1353,9 @@ inline bool genericPoint::getApproxXYCoordinates(double& x, double& y, bool apap
 		x = op.X(); y = op.Y();
 		return true;
 	}
+#ifndef NDEBUG
 	ip_error("genericPoint::getApproxXYCoordinates - should not happen\n");
+#endif
 	return false;
 }
 
@@ -1367,7 +1369,9 @@ inline bool genericPoint::getApproxXYZCoordinates(double& x, double& y, double& 
 		x = op.X(); y = op.Y(); z = op.Z();
 		return true;
 	}
+#ifndef NDEBUG
 	ip_error("genericPoint::getApproxXYZCoordinates - should not happen\n");
+#endif
 	return false;
 }
 
@@ -1375,7 +1379,10 @@ inline bool genericPoint::getExactXYCoordinates(bigrational& x, bigrational& y) 
 {
 	if (isExplicit2D()) return toExplicit2D().getExactXYCoordinates(x, y);
 	else if (isSSI()) return toSSI().getExactXYCoordinates(x, y);
-	else ip_error("genericPoint::getExactXYCoordinates - should not happen\n");
+	else
+#ifndef NDEBUG
+		ip_error("genericPoint::getExactXYCoordinates - should not happen\n");
+#endif
 	return false;
 }
 
@@ -1389,7 +1396,10 @@ inline bool genericPoint::getExactXYZCoordinates(bigrational& x, bigrational& y,
 	else if (isTBC()) return toTBC().getExactXYZCoordinates(x, y, z);
 	else if (isExplicit2D()) { z = bigfloat(0); return toExplicit2D().getExactXYCoordinates(x, y); }
 	else if (isSSI()) { z = bigfloat(0); return toSSI().getExactXYCoordinates(x, y); }
-	else ip_error("genericPoint::getExactXYZCoordinates - should not happen\n");
+	else
+#ifndef NDEBUG
+		ip_error("genericPoint::getExactXYZCoordinates - should not happen\n");
+#endif
 	return false;
 }
 
@@ -1468,7 +1478,10 @@ inline ostream& operator<<(ostream& os, const genericPoint& p)
 	else if (p.isLNC()) return os << p.toLNC();
 	else if (p.isBPT()) return os << p.toBPT();
 	else if (p.isTBC()) return os << p.toTBC();
-	else ip_error("genericPoint::operator<< - should not happen\n");
+	else
+#ifndef NDEBUG
+		ip_error("genericPoint::operator<< - should not happen\n");
+#endif
 	return os;
 }
 

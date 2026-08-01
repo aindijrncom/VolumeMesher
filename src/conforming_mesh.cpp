@@ -339,7 +339,7 @@ static inline uint32_t tet_faceID(uint32_t v0, uint32_t v1, uint32_t v2,
     if(v[2] != v0 && v[2] != v1 && v[2] != v2 ) return 2;
     if(v[3] != v0 && v[3] != v1 && v[3] != v2 ) return 3;
 
-    ip_error("tet_faceID: FATAL ERROR no faces of tet correspond to vertices.\n");
+    ip_error("tet_faceID: no matching face.\n");
     return UINT32_MAX;
 }
 
@@ -2546,7 +2546,9 @@ void debug_trace_edge_constraints(
     TetMesh* mesh,
     edge_constraints_t* edge_constraints)
 {
+#ifndef NDEBUG
     fprintf(stderr, "\n=== Edge Constraint Debug ===\n");
+#endif
     fprintf(stderr, "mesh->num_vertices = %u\n", mesh->num_vertices);
     fprintf(stderr, "mesh->tet_num      = %llu\n", (unsigned long long)mesh->tet_num);
     fprintf(stderr, "vertices[2].original_index = %u",
@@ -2648,7 +2650,9 @@ void debug_trace_edge_constraints(
         free(mark);
     }
 
+#ifndef NDEBUG
     fprintf(stderr, "=== End Edge Constraint Debug ===\n\n");
+#endif
 }
 
 //  Input: pointer to the mesh,
